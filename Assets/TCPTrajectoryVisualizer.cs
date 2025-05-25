@@ -9,6 +9,10 @@ using System;
 public class TCPTrajectoryVisualizer : MonoBehaviour
 {
     public int port = 5005;
+    // 👈 FileTrajectoryVisualizer 참조 추가
+    public FileTrajectoryVisualizer fileVisualizer;
+    public float targetAlpha = 0.3f; // 👈 반투명도 설정 (0.0 ~ 1.0)
+
     private TcpListener tcpListener;
     private Thread listenThread;
 
@@ -18,8 +22,9 @@ public class TCPTrajectoryVisualizer : MonoBehaviour
     private List<Vector3> trajectoryPoints = new List<Vector3>();
     private LineRenderer lineRenderer;
 
-    // 첫 번째 데이터는 건너뛰기 위한 플래그
     private bool skipFirstData = true;
+    // 👈 투명도 설정을 한 번만 하도록 플래그 추가
+    private bool transparencySet = false;
 
     void Start()
     {
@@ -29,10 +34,13 @@ public class TCPTrajectoryVisualizer : MonoBehaviour
             lineRenderer = gameObject.AddComponent<LineRenderer>();
         }
 
-        lineRenderer.startWidth = 2f;
-        lineRenderer.endWidth = 2f;
+        // 👈 LineRenderer 설정 (너비, 색상 등)
+        lineRenderer.startWidth = 0.02f; // FileVisualizer와 비슷하게 조절 (또는 원하는 값)
+        lineRenderer.endWidth = 0.02f;
         lineRenderer.material = new Material(Shader.Find("Sprites/Default"));
-        lineRenderer.material.color = Color.black;
+        lineRenderer.startColor = Color.black; // 시작 색상
+        lineRenderer.endColor = Color.black;   // 끝 색상
+        lineRenderer.numCornerVertices = lineRenderer.numCapVertices = 8; // 모서리 둥글게
 
         listenThread = new Thread(new ThreadStart(ListenForClients));
         listenThread.IsBackground = true;
@@ -40,8 +48,7 @@ public class TCPTrajectoryVisualizer : MonoBehaviour
         Debug.Log("TCP Trajectory Visualizer started on port " + port);
     }
 
-    void ListenForClients()
-    {
+    void ListenForClients() { /* ... 기존 코드와 동일 ... */
         tcpListener = new TcpListener(IPAddress.Any, port);
         tcpListener.Start();
         try
@@ -59,10 +66,9 @@ public class TCPTrajectoryVisualizer : MonoBehaviour
         {
             Debug.Log("Socket exception: " + se.Message);
         }
-    }
+     }
 
-    void HandleClientComm(object clientObj)
-    {
+    void HandleClientComm(object clientObj) { /* ... 기존 코드와 동일 ... */
         TcpClient client = (TcpClient)clientObj;
         NetworkStream stream = client.GetStream();
         byte[] buffer = new byte[8192];
@@ -73,26 +79,16 @@ public class TCPTrajectoryVisualizer : MonoBehaviour
             {
                 string data = Encoding.UTF8.GetString(buffer, 0, bytesRead);
                 Debug.Log("Received data: " + data);
-
-                // JSON 배열을 파싱하기 위해 객체로 Wrapping
                 string wrappedData = "{\"records\":" + data + "}";
-
                 try
                 {
                     TrajectoryRecords recordsWrapper = JsonUtility.FromJson<TrajectoryRecords>(wrappedData);
-
                     if (recordsWrapper != null && recordsWrapper.records != null)
                     {
                         foreach (var record in recordsWrapper.records)
-                            {
-                                /* ★ 축 변환 한-줄만 수정 ★
-                                (x ,y ,z)  →  (x ,z ,y)  -- z를 ↑ 로 사용 */
-                                EnqueuePosition(new Vector3(record.x_end,   // x 그대로
-                                                            record.z_end, // z → Unity-y(위)
-                                                            record.y_end  // y → Unity-z(앞)
-                                                            ));
-                            }
-
+                        {
+                            EnqueuePosition(new Vector3(record.x_end, record.z_end, record.y_end));
+                        }
                     }
                     else
                     {
@@ -111,30 +107,30 @@ public class TCPTrajectoryVisualizer : MonoBehaviour
         }
         client.Close();
         Debug.Log("Client disconnected.");
-    }
+     }
 
-    void EnqueuePosition(Vector3 pos)
-    {
-        lock (queueLock)
+    void EnqueuePosition(Vector3 pos) { /* ... 기존 코드와 동일 ... */
+         lock (queueLock)
         {
             positionQueue.Enqueue(pos);
         }
-    }
+     }
 
     void Update()
     {
+        bool pointAdded = false; // 👈 이번 업데이트에서 점이 추가되었는지 확인
         lock (queueLock)
         {
             while (positionQueue.Count > 0)
             {
                 Vector3 pos = positionQueue.Dequeue();
-                // 첫 번째 데이터는 건너뜁니다.
                 if (skipFirstData)
                 {
                     skipFirstData = false;
                     continue;
                 }
                 trajectoryPoints.Add(pos);
+                pointAdded = true; // 👈 점 추가됨!
             }
         }
 
@@ -142,28 +138,38 @@ public class TCPTrajectoryVisualizer : MonoBehaviour
         {
             lineRenderer.positionCount = trajectoryPoints.Count;
             lineRenderer.SetPositions(trajectoryPoints.ToArray());
+
+            // 👈 점이 추가되었고, 아직 투명도 설정을 안 했다면?
+            if (pointAdded && !transparencySet)
+            {
+                if (fileVisualizer != null)
+                {
+                    // 👈 FileVisualizer의 투명도 설정 호출!
+                    fileVisualizer.SetTransparency(targetAlpha);
+                    transparencySet = true; // 👈 이제 설정 완료!
+                }
+                else
+                {
+                    Debug.LogWarning("[TCPVisualizer] FileVisualizer가 연결되지 않았습니다!");
+                    transparencySet = true; // 경고 후 다시 시도하지 않도록 설정
+                }
+            }
         }
     }
 
-    [Serializable]
-    public class TrajectoryRecord
-    {
+    [Serializable] public class TrajectoryRecord { /* ... 기존 코드와 동일 ... */
         public float x_end;
         public float y_end;
         public float z_end;
-    }
-
-    [Serializable]
-    public class TrajectoryRecords
-    {
+     }
+    [Serializable] public class TrajectoryRecords { /* ... 기존 코드와 동일 ... */
         public List<TrajectoryRecord> records;
-    }
+     }
 
-    void OnApplicationQuit()
-    {
+    void OnApplicationQuit() { /* ... 기존 코드와 동일 ... */
         if (tcpListener != null)
         {
             tcpListener.Stop();
         }
-    }
+     }
 }

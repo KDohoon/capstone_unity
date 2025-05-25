@@ -5,142 +5,144 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 
-/*─────────────────────────────────────────────────────────────
- *  FileTrajectoryVisualizer.cs
- *  • 지정된 폴더에서 가장 “최근 저장”된 txt를 찾아 궤적 표시
- *  • 새 txt가 생성·갱신되면 실시간으로 다시 그려 줌
- *  • 5 컬럼( r,sequence,timestamp,deg,endpoint )
- *    & 12 컬럼( 구형 포맷 ) 둘 다 자동 인식
- *────────────────────────────────────────────────────────────*/
 [RequireComponent(typeof(LineRenderer))]
 public class FileTrajectoryVisualizer : MonoBehaviour
 {
     [Header("모니터링할 폴더")]
-    public string folderPath =
-        @"C:\Users\kdh03\Desktop\캡스톤\capstone_2024\generation_trajectory";
+    public string folderPath = @"C:\Users\kdh03\Desktop\캡스톤\capstone_2024\generation_trajectory";
 
     [Header("렌더링 옵션")]
-    public float  scale     = 1f;
-    public float  lineWidth = 0.02f;
-    public float  pollSec   = 1f;     // 새 파일 체크 주기(초)
+    public float scale = 1f;
+    public float lineWidth = 0.02f;
+    public float pollSec = 1f;
 
-    /*──────── 내부 상태 ───────*/
     string currentFile;
     System.DateTime currentStamp;
-
     struct Row { public float time; public Vector3 end; }
 
-    /*───────────────── Unity 루틴 ─────────────────*/
-    void Start()
+    private LineRenderer lr;
+    private Coroutine watchCoroutine;
+
+    void Awake()
     {
-        var lr = GetComponent<LineRenderer>();
-        lr.material        = new Material(Shader.Find("Sprites/Default"));
-        lr.startColor      = lr.endColor = Color.white; // 흰 선
+        lr = GetComponent<LineRenderer>();
+        lr.material = new Material(Shader.Find("Sprites/Default"));
         lr.widthMultiplier = lineWidth;
         lr.numCornerVertices = lr.numCapVertices = 8;
-
-        StartCoroutine(WatchFolder());
+        SetGradient(1.0f); // 처음에는 불투명하게 설정
     }
 
-    /*──────────── 폴더 감시 코루틴 ────────────*/
-    IEnumerator WatchFolder()
+    // 👈 그라데이션 설정 함수
+    private void SetGradient(float alpha)
     {
+        Gradient gradient = new Gradient();
+        gradient.SetKeys(
+            new GradientColorKey[] {
+                new GradientColorKey(Color.red, 0.0f),
+                new GradientColorKey(Color.red, 0.1f),
+                new GradientColorKey(Color.white, 0.101f),
+                new GradientColorKey(Color.white, 0.899f),
+                new GradientColorKey(Color.yellow, 0.9f),
+                new GradientColorKey(Color.yellow, 1.0f)
+            },
+            new GradientAlphaKey[] {
+                new GradientAlphaKey(alpha, 0.0f),
+                new GradientAlphaKey(alpha, 1.0f)
+            }
+        );
+        lr.colorGradient = gradient;
+    }
+
+    // 👈 여기! SetTransparency 메소드
+    public void SetTransparency(float alpha)
+    {
+        Debug.Log($"[FileVisualizer] 투명도를 {alpha}로 변경합니다.");
+        SetGradient(Mathf.Clamp01(alpha));
+    }
+
+    public void SetActiveState(bool active)
+    {
+        if (lr != null) lr.enabled = active;
+
+        if (active && watchCoroutine == null)
+        {
+            watchCoroutine = StartCoroutine(WatchFolder());
+            Debug.Log("[FileVisualizer] Watching started.");
+        }
+        else if (!active && watchCoroutine != null)
+        {
+            StopCoroutine(watchCoroutine);
+            watchCoroutine = null;
+            if (lr != null) lr.positionCount = 0;
+            Debug.Log("[FileVisualizer] Watching stopped.");
+        }
+    }
+
+    IEnumerator WatchFolder() { /* ... 기존 코드와 동일 ... */
         while (true)
         {
-            string latest = GetLatestFile(folderPath, "*.txt",
-                                          out System.DateTime stamp);
-            if (latest != null &&
-               (latest != currentFile || stamp != currentStamp))
+            string latest = GetLatestFile(folderPath, "*.txt", out System.DateTime stamp);
+            if (latest != null && (latest != currentFile || stamp != currentStamp))
             {
-                currentFile  = latest;
+                currentFile = latest;
                 currentStamp = stamp;
                 DrawFile(latest);
             }
             yield return new WaitForSecondsRealtime(pollSec);
         }
     }
-
-    /*──────────── 최신 파일 찾기 ─────────────*/
-    string GetLatestFile(string dir, string pattern,
-                         out System.DateTime stamp)
-    {
+    string GetLatestFile(string dir, string pattern, out System.DateTime stamp) { /* ... 기존 코드와 동일 ... */
         stamp = System.DateTime.MinValue;
         if (!Directory.Exists(dir)) return null;
-
         var file = Directory.GetFiles(dir, pattern)
                             .OrderByDescending(File.GetLastWriteTime)
                             .FirstOrDefault();
         if (file != null) stamp = File.GetLastWriteTime(file);
         return file;
     }
-
-    /*──────────── txt 읽어 그리기 ────────────*/
-    void DrawFile(string path)
-    {
+    void DrawFile(string path) { /* ... 기존 코드와 동일 ... */
         List<Row> rows = ParseCsv(path);
         if (rows.Count == 0)
         {
             Debug.LogWarning($"[FTV] 유효 데이터 없음: {Path.GetFileName(path)}");
+            lr.positionCount = 0;
             return;
         }
-
         rows.Sort((a, b) => a.time.CompareTo(b.time));
-
-        var lr = GetComponent<LineRenderer>();
         lr.positionCount = rows.Count;
-
-        /* ★★ 축 변환 한‑줄만 변경 ★★
-        (x ,y ,z)  →  (x ,z ,y)   :   z를 ↑,  y를 앞쪽으로 */
         for (int i = 0; i < rows.Count; ++i)
         {
             Vector3 p = rows[i].end;
-            lr.SetPosition(i, new Vector3(p.x, p.z, p.y) * scale);
+            Vector3 unityPos = new Vector3(p.x, p.z, p.y) * scale;
+            lr.SetPosition(i, unityPos);
         }
-
         Debug.Log($"[FTV] '{Path.GetFileName(path)}' 표시 ({rows.Count} pts)");
     }
-
-    /*──────────── CSV 파싱 (5열 & 12열) ────────*/
-    List<Row> ParseCsv(string path)
-    {
+    List<Row> ParseCsv(string path) { /* ... 기존 코드와 동일 ... */
         var lines = File.ReadAllLines(path);
         if (lines.Length < 2) return new List<Row>();
-
-        bool F(string s, out float v) => float.TryParse(
-                s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
-        bool I(string s, out int v)   =>   int.TryParse(
-                s.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
-
+        bool F(string s, out float v) => float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+        bool I(string s, out int v) => int.TryParse(s.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
         var rows = new List<Row>();
         bool header = true;
-
         foreach (var raw in lines)
         {
             if (header) { header = false; continue; }
             if (string.IsNullOrWhiteSpace(raw)) continue;
-
             var col = raw.Split(',');
             if (col.Length == 5)
-            {   /* 신형 포맷: r,sequence,timestamp,deg,endpoint */
+            {
                 if (!I(col[1], out int seq)) continue;
                 var ep = col[4].Split('/');
-                if (ep.Length < 3 ||
-                    !F(ep[0], out float x) ||
-                    !F(ep[1], out float y) ||
-                    !F(ep[2], out float z)) continue;
+                if (ep.Length < 3 || !F(ep[0], out float x) || !F(ep[1], out float y) || !F(ep[2], out float z)) continue;
                 rows.Add(new Row { time = seq, end = new Vector3(x, y, z) });
             }
             else if (col.Length >= 12)
-            {   /* 구형 포맷 */
-                if (col[0] == "s") continue;
-                if (!I(col[1], out int seq) || !I(col[2], out int ts)) continue;
+            {
+                if (col[0] == "s" || !I(col[1], out int seq) || !I(col[2], out int ts)) continue;
                 var ep = col[6].Split('/');
-                if (ep.Length < 3 ||
-                    !F(ep[0], out float x) ||
-                    !F(ep[1], out float y) ||
-                    !F(ep[2], out float z)) continue;
-                float time = ts - seq - 1f;
-                rows.Add(new Row { time = time, end = new Vector3(x, y, z) });
+                if (ep.Length < 3 || !F(ep[0], out float x) || !F(ep[1], out float y) || !F(ep[2], out float z)) continue;
+                rows.Add(new Row { time = ts - seq - 1f, end = new Vector3(x, y, z) });
             }
         }
         return rows;
